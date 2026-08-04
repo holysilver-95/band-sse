@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>코드 단순화 도우미 · 실용밴드 수업 도구</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;800&family=JetBrains+Mono:wght@500;700&display=swap" />
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { background: #0E1024; }
+  #root:empty::before {
+    content: "불러오는 중...";
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #8A8FB5;
+    font-family: sans-serif;
+  }
+</style>
+<script>
+  function showBootError(msg) {
+    var root = document.getElementById("root");
+    if (root) {
+      root.innerHTML =
+        '<div style="color:#F5F3ED;background:#14172E;min-height:100vh;padding:24px;font-family:sans-serif;white-space:pre-wrap;line-height:1.6;">' +
+        '<h2 style="color:#FF7A6E;margin-top:0;">앱을 불러오는 중 문제가 발생했어요</h2>' +
+        '<p>아래 메시지를 캡처해서 알려주시면 원인을 확인할 수 있어요.</p>' +
+        '<pre style="background:#0E1024;padding:12px;border-radius:8px;overflow:auto;">' +
+        (msg || "알 수 없는 오류") + "</pre></div>";
+    }
+  }
+  window.addEventListener("error", function (e) {
+    showBootError((e && e.message) || String(e));
+  }, true);
+  window.addEventListener("unhandledrejection", function (e) {
+    showBootError((e && e.reason && (e.reason.message || e.reason)) || String(e));
+  });
+  window.addEventListener("load", function () {
+    setTimeout(function () {
+      if (typeof React === "undefined" || typeof ReactDOM === "undefined") {
+        showBootError("React 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인하거나, 학교 네트워크에서 cdn.jsdelivr.net / cdn.tailwindcss.com 접속이 막혀있는지 확인해 주세요.");
+      }
+    }, 4000);
+  });
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useEffect, useRef, useCallback } = React;
+
+const NOTE_TO_SEMITONE = {
+  C: 0,
+  "C#": 1,
+  Db: 1,
+  D: 2,
+  "D#": 3,
+  Eb: 3,
+  E: 4,
+  F: 5,
+  "F#": 6,
+  Gb: 6,
+  G: 7,
+  "G#": 8,
+  Ab: 8,
+  A: 9,
+  "A#": 10,
+  Bb: 10,
+  B: 11
+};
+function parseToken(raw) {
+  const token = raw.trim();
+  if (!token) return null;
+  const m = token.match(/^([A-Ga-g])([#b]?)([^/]*)(?:\/([A-Ga-g][#b]?))?$/);
+  if (!m) return null;
+  const root = m[1].toUpperCase() + (m[2] || "");
+  const quality = (m[3] || "").trim();
+  const bass = m[4] ? m[4][0].toUpperCase() + (m[4][1] || "") : null;
+  if (!(root in NOTE_TO_SEMITONE)) return null;
+  return { original: token, root, quality, bass };
+}
+function simplify(chord, level) {
+  const q = chord.quality.toLowerCase();
+  let minor = /^m(?!aj)/.test(q) || q.startsWith("min") || q.includes("dim");
+  const augmented = q.includes("aug") || q.includes("+");
+  if (augmented) minor = false;
+  if (level === "A") {
+    return { name: chord.root + (minor ? "m" : ""), category: minor ? "minor" : "major" };
+  }
+  const isMaj7 = q.includes("maj7");
+  let seventh = null;
+  if (!isMaj7 && /7/.test(q)) seventh = minor ? "min7" : "dom7";
+  if (seventh === "min7") return { name: chord.root + "m7", category: "min7" };
+  if (seventh === "dom7") return { name: chord.root + "7", category: "dom7" };
+  return { name: chord.root + (minor ? "m" : ""), category: minor ? "minor" : "major" };
+}
+function parseProgression(text, level) {
+  return text.split(/[\s,\-–—]+/).map((t) => t.trim()).filter(Boolean).map((t) => {
+    const parsed = parseToken(t);
+    if (!parsed) return { original: t, invalid: true };
+    return { ...parsed, ...simplify(parsed, level) };
+  });
+}
+const GUITAR_SHAPES = {
+  C: "x32010",
+  C7: "x32310",
+  D: "xx0232",
+  Dm: "xx0231",
+  D7: "xx0212",
+  Dm7: "xx0211",
+  E: "022100",
+  Em: "022000",
+  E7: "020100",
+  Em7: "020000",
+  G: "320003",
+  G7: "320001",
+  A: "x02220",
+  Am: "x02210",
+  A7: "x02020",
+  Am7: "x02010",
+  B7: "x21202"
+};
+function findGuitarShape(chordName) {
+  if (GUITAR_SHAPES[chordName]) return { shapeName: chordName, capo: 0, exact: true };
+  const m = chordName.match(/^([A-G][#b]?)(m7|m|7)?$/);
+  if (!m) return null;
+  const root = m[1];
+  const quality = m[2] || "";
+  const targetSemi = NOTE_TO_SEMITONE[root];
+  let best = null;
+  for (const shapeName of Object.keys(GUITAR_SHAPES)) {
+    const sm = shapeName.match(/^([A-G])(m7|m|7)?$/);
+    if (!sm) continue;
+    const shapeQuality = sm[2] || "";
+    if (shapeQuality !== quality) continue;
+    const shapeSemi = NOTE_TO_SEMITONE[sm[1]];
+    const capo = (targetSemi - shapeSemi + 12) % 12;
+    if (capo === 0) continue;
+    if (!best || capo < best.capo) best = { shapeName, capo, exact: false };
+  }
+  return best;
+}
+function GuitarDiagram({ chordName }) {
+  const found = findGuitarShape(chordName);
+  if (!found) {
+    return /* @__PURE__ */ React.createElement("div", { className: "text-sm text-amber-200/70 italic" }, "\uB2E4\uC774\uC5B4\uADF8\uB7A8 \uC900\uBE44\uC911 \xB7 \uC774 \uCF54\uB4DC\uB294 \uC544\uC9C1 \uB4F1\uB85D\uB418\uC9C0 \uC54A\uC558\uC5B4\uC694");
+  }
+  const shape = GUITAR_SHAPES[found.shapeName].split("");
+  const frets = shape.map((c) => c === "x" ? -1 : parseInt(c, 10));
+  const maxFret = Math.max(...frets.filter((f) => f > 0), 3);
+  const fretCount = Math.max(maxFret, 3);
+  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-col items-center gap-2" }, !found.exact && /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      className: "text-xs px-2 py-1 rounded-full font-mono",
+      style: { background: "rgba(255,178,56,0.15)", color: "#FFB238", border: "1px solid rgba(255,178,56,0.4)" }
+    },
+    "\uCE74\uD3EC ",
+    found.capo,
+    "\uBC88 \uD504\uB81B + ",
+    found.shapeName,
+    " \uBAA8\uC591"
+  ), /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 140 ${30 + fretCount * 28}`, width: "120", height: 30 + fretCount * 28 }, Array.from({ length: fretCount + 1 }).map((_, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: "20", y1: 20 + i * 28, x2: "120", y2: 20 + i * 28, stroke: "#8A8FB5", strokeWidth: i === 0 ? 3 : 1 })), Array.from({ length: 6 }).map((_, i) => /* @__PURE__ */ React.createElement("line", { key: i, x1: 20 + i * 20, y1: "20", x2: 20 + i * 20, y2: 20 + fretCount * 28, stroke: "#8A8FB5", strokeWidth: "1" })), frets.map((f, i) => {
+    const x = 20 + i * 20;
+    if (f === -1) return /* @__PURE__ */ React.createElement("text", { key: i, x, y: "12", textAnchor: "middle", fontSize: "12", fill: "#FF7A6E" }, "x");
+    if (f === 0) return /* @__PURE__ */ React.createElement("circle", { key: i, cx: x, cy: "10", r: "5", fill: "none", stroke: "#2EC4B6", strokeWidth: "2" });
+    return /* @__PURE__ */ React.createElement("circle", { key: i, cx: x, cy: 20 + (f - 0.5) * 28, r: "8", fill: "#FFB238" });
+  })));
+}
+const WHITE_SEMI = [0, 2, 4, 5, 7, 9, 11];
+const BLACK = [{ semi: 1, afterWhite: 0 }, { semi: 3, afterWhite: 1 }, { semi: 6, afterWhite: 3 }, { semi: 8, afterWhite: 4 }, { semi: 10, afterWhite: 5 }];
+function chordSemitones(chordName) {
+  const m = chordName.match(/^([A-G][#b]?)(m7|m|7)?$/);
+  if (!m) return [];
+  const root = NOTE_TO_SEMITONE[m[1]];
+  const q = m[2] || "";
+  let intervals = [0, 4, 7];
+  if (q === "m") intervals = [0, 3, 7];
+  if (q === "7") intervals = [0, 4, 7, 10];
+  if (q === "m7") intervals = [0, 3, 7, 10];
+  return intervals.map((iv) => (root + iv) % 12);
+}
+function PianoDiagram({ chordName }) {
+  const active = new Set(chordSemitones(chordName));
+  const whiteW = 30;
+  return /* @__PURE__ */ React.createElement("svg", { viewBox: "0 0 210 90", width: "180", height: "77" }, WHITE_SEMI.map((semi, i) => /* @__PURE__ */ React.createElement(
+    "rect",
+    {
+      key: i,
+      x: i * whiteW,
+      y: "0",
+      width: whiteW - 1,
+      height: "88",
+      rx: "3",
+      fill: active.has(semi) ? "#FFB238" : "#F5F3ED",
+      stroke: "#1B1F3B"
+    }
+  )), BLACK.map((b, i) => /* @__PURE__ */ React.createElement(
+    "rect",
+    {
+      key: i,
+      x: b.afterWhite * whiteW + whiteW - 9,
+      y: "0",
+      width: "18",
+      height: "54",
+      rx: "2",
+      fill: active.has(b.semi) ? "#FF7A6E" : "#1B1F3B"
+    }
+  )));
+}
+const INSTRUMENTS = [
+  { id: "vocal", label: "\uBCF4\uCEEC", emoji: "\u{1F3A4}" },
+  { id: "guitar", label: "\uAE30\uD0C0", emoji: "\u{1F3B8}" },
+  { id: "bass", label: "\uBCA0\uC774\uC2A4", emoji: "\u{1F3BB}" },
+  { id: "keys", label: "\uAC74\uBC18", emoji: "\u{1F3B9}" },
+  { id: "drums", label: "\uB4DC\uB7FC", emoji: "\u{1F941}" }
+];
+function ChordTag({ chord }) {
+  if (chord.invalid) {
+    return /* @__PURE__ */ React.createElement("span", { className: "font-mono text-sm px-2 py-1 rounded", style: { background: "rgba(255,122,110,0.15)", color: "#FF7A6E" } }, chord.original, "?");
+  }
+  return /* @__PURE__ */ React.createElement(
+    "span",
+    {
+      className: "font-mono text-sm px-2 py-1 rounded",
+      style: { background: "rgba(46,196,182,0.15)", color: "#2EC4B6", border: "1px solid rgba(46,196,182,0.35)" },
+      title: `\uC6D0\uACE1 \uCF54\uB4DC: ${chord.original}`
+    },
+    chord.name
+  );
+}
+function InstrumentView({ instrument, chords }) {
+  const valid = chords.filter((c) => !c.invalid);
+  if (valid.length === 0) {
+    return /* @__PURE__ */ React.createElement("p", { className: "text-sm", style: { color: "#8A8FB5" } }, "\uC704\uC5D0 \uCF54\uB4DC \uC9C4\uD589\uC744 \uC785\uB825\uD558\uBA74 \uC5EC\uAE30\uC5D0 \uC545\uAE30\uBCC4 \uC5F0\uC8FC \uAC00\uC774\uB4DC\uAC00 \uB098\uD0C0\uB098\uC694.");
+  }
+  if (instrument === "drums") {
+    return /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-3" }, valid.map((c, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex flex-col items-center gap-1 px-3 py-2 rounded-lg", style: { background: "rgba(255,255,255,0.04)" } }, /* @__PURE__ */ React.createElement("span", { className: "font-mono text-xs", style: { color: "#8A8FB5" } }, "\uB9C8\uB514 ", i + 1), /* @__PURE__ */ React.createElement("div", { className: "flex gap-1" }, [1, 2, 3, 4].map((b) => /* @__PURE__ */ React.createElement("span", { key: b, className: "w-2.5 h-2.5 rounded-full", style: { background: b % 2 === 1 ? "#FFB238" : "#2EC4B6" } }))), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: "#F5F3ED" } }, "\uD0A5-\uC2A4\uB124\uC5B4-\uD0A5-\uC2A4\uB124\uC5B4"))));
+  }
+  if (instrument === "bass") {
+    return /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-4" }, valid.map((c, i) => {
+      const rootLetter = c.name.replace(/(m7|m|7)$/, "");
+      return /* @__PURE__ */ React.createElement("div", { key: i, className: "flex flex-col items-center gap-1 px-4 py-3 rounded-xl", style: { background: "rgba(255,255,255,0.04)" } }, /* @__PURE__ */ React.createElement("span", { className: "text-2xl font-bold", style: { color: "#FFB238", fontFamily: "'JetBrains Mono', monospace" } }, rootLetter), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: "#8A8FB5" } }, "\uB8E8\uD2B8\uC74C\uB9CC \uC5F0\uC8FC"));
+    }));
+  }
+  if (instrument === "keys") {
+    return /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-4" }, valid.map((c, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex flex-col items-center gap-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-mono mb-1", style: { color: "#F5F3ED" } }, c.name), /* @__PURE__ */ React.createElement(PianoDiagram, { chordName: c.name }))));
+  }
+  if (instrument === "guitar") {
+    return /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-5" }, valid.map((c, i) => /* @__PURE__ */ React.createElement("div", { key: i, className: "flex flex-col items-center gap-1" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm font-mono mb-1", style: { color: "#F5F3ED" } }, c.name), /* @__PURE__ */ React.createElement(GuitarDiagram, { chordName: c.name }))));
+  }
+  return /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-3" }, valid.map((c, i) => /* @__PURE__ */ React.createElement(
+    "span",
+    {
+      key: i,
+      className: "text-2xl font-bold px-4 py-2 rounded-lg",
+      style: { background: "rgba(255,178,56,0.12)", color: "#FFB238", fontFamily: "'JetBrains Mono', monospace" }
+    },
+    c.name
+  )));
+}
+function BandChordHelper() {
+  useEffect(() => {
+    if (!document.getElementById("bch-fonts")) {
+      const link = document.createElement("link");
+      link.id = "bch-fonts";
+      link.rel = "stylesheet";
+      link.href = "https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;800&family=JetBrains+Mono:wght@500;700&display=swap";
+      document.head.appendChild(link);
+    }
+  }, []);
+  const [rawInput, setRawInput] = useState("C - G - Am - F");
+  const [level, setLevel] = useState("A");
+  const [instrument, setInstrument] = useState("guitar");
+  const [chords, setChords] = useState(() => parseProgression("C - G - Am - F", "A"));
+  const [showInfo, setShowInfo] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState("");
+  const [wasInferred, setWasInferred] = useState(false);
+  const fileInputRef = useRef(null);
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [apiKeySaved, setApiKeySaved] = useState(false);
+  const recompute = useCallback((text, lvl) => setChords(parseProgression(text, lvl)), []);
+  useEffect(() => {
+    recompute(rawInput, level);
+  }, [level]);
+  const handleInputChange = (e) => {
+    setRawInput(e.target.value);
+    setWasInferred(false);
+    recompute(e.target.value, level);
+  };
+  const handleImageUpload = async (e) => {
+    var _a, _b, _c, _d, _e;
+    const file = (_a = e.target.files) == null ? void 0 : _a[0];
+    if (!file) return;
+    if (!apiKey) {
+      setAnalyzeError("\uBA3C\uC800 \uC0C1\uB2E8\uC5D0\uC11C API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.");
+      e.target.value = "";
+      return;
+    }
+    setAnalyzing(true);
+    setAnalyzeError("");
+    setWasInferred(false);
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result.split(",")[1]);
+        r.onerror = () => reject(new Error("\uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uC5B4\uC694"));
+        r.readAsDataURL(file);
+      });
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: "\uC774 \uC774\uBBF8\uC9C0\uB294 \uC545\uBCF4\uC57C. \uB450 \uAC00\uC9C0 \uC911 \uD558\uB098\uB85C \uB2F5\uD574\uC918.\n1) \uC774\uBBF8\uC9C0 \uC704\uC5D0 \uC774\uBBF8 \uCF54\uB4DC \uAE30\uD638(C, G7, Am, Dm7 \uAC19\uC740 \uBB38\uC790)\uAC00 \uD45C\uAE30\uB3FC \uC788\uC73C\uBA74, \uADF8 \uAE30\uD638\uB4E4\uC744 \uC21C\uC11C\uB300\uB85C \uACF5\uBC31\uC73C\uB85C \uAD6C\uBD84\uD574\uC11C \uC801\uC5B4\uC918. \uCCAB \uC904\uC5D0 'MODE=SYMBOLS' \uB77C\uACE0 \uC4F0\uACE0 \uB2E4\uC74C \uC904\uC5D0 \uCF54\uB4DC\uB4E4\uB9CC \uC801\uC5B4.\n2) \uCF54\uB4DC \uAE30\uD638 \uC5C6\uC774 \uC74C\uD45C(\uC624\uC120\uBCF4)\uB9CC \uC788\uB2E4\uBA74, \uAC01 \uB9C8\uB514\uC758 \uC74C\uD45C\uB4E4(\uBA5C\uB85C\uB514 \uC74C, \uD654\uC74C, \uC870\uC131, \uC800\uC74C)\uC744 \uADFC\uAC70\uB85C \uADF8 \uB9C8\uB514\uC5D0 \uAC00\uC7A5 \uC5B4\uC6B8\uB9AC\uB294 \uCF54\uB4DC\uB97C \uD558\uB098\uC529 \uCD94\uC815\uD574\uC918. \uCCAB \uC904\uC5D0 'MODE=INFERRED' \uB77C\uACE0 \uC4F0\uACE0 \uB2E4\uC74C \uC904\uC5D0 \uB9C8\uB514 \uC21C\uC11C\uB300\uB85C \uCD94\uC815 \uCF54\uB4DC\uB9CC \uACF5\uBC31\uC73C\uB85C \uAD6C\uBD84\uD574\uC11C \uC801\uC5B4. \uAC00\uC0AC\uB098 \uC74C\uD45C \uC790\uCCB4\uB97C \uC62E\uACA8 \uC801\uC9C0 \uB9D0\uACE0, \uCF54\uB4DC \uC774\uB984\uB9CC \uACB0\uACFC\uB85C \uB0B4.\n\uCF54\uB4DC \uAE30\uD638\uB3C4 \uC5C6\uACE0 \uC74C\uD45C\uB3C4 \uBD84\uC11D\uD560 \uC218 \uC5C6\uB294 \uC774\uBBF8\uC9C0\uB77C\uBA74 \uC815\uD655\uD788 NO_CHORD_SYMBOLS_FOUND \uB77C\uACE0\uB9CC \uB2F5\uD574."
+                  },
+                  { inline_data: { mime_type: file.type || "image/png", data: base64 } }
+                ]
+              }
+            ]
+          })
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        const msg = ((_b = data == null ? void 0 : data.error) == null ? void 0 : _b.message) || "";
+        setAnalyzeError(
+          response.status === 400 || response.status === 403 ? "API \uD0A4\uAC00 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC544\uC694. \uC0C1\uB2E8\uC758 '\uD0A4 \uBCC0\uACBD'\uC5D0\uC11C \uB2E4\uC2DC \uC785\uB825\uD574 \uC8FC\uC138\uC694." : `API \uC694\uCCAD \uC911 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC5B4\uC694. ${msg}`
+        );
+        return;
+      }
+      const text = (((_e = (_d = (_c = data == null ? void 0 : data.candidates) == null ? void 0 : _c[0]) == null ? void 0 : _d.content) == null ? void 0 : _e.parts) || []).map((p) => p.text || "").join(" ").trim();
+      if (!text || text.includes("NO_CHORD_SYMBOLS_FOUND")) {
+        setAnalyzeError("\uC774\uBBF8\uC9C0\uC5D0\uC11C \uCF54\uB4DC\uB97C \uC77D\uC5B4\uB0B4\uC9C0 \uBABB\uD588\uC5B4\uC694. \uC0AC\uC9C4\uC774 \uC120\uBA85\uD55C\uC9C0, \uCF54\uB4DC\uB098 \uC74C\uD45C\uAC00 \uC798 \uBCF4\uC774\uB294\uC9C0 \uD655\uC778\uD574 \uC8FC\uC138\uC694.");
+        setWasInferred(false);
+      } else {
+        const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+        const inferred = /MODE=INFERRED/i.test(lines[0] || "");
+        const chordLine = lines.find((l) => !/^MODE=/i.test(l)) || "";
+        setWasInferred(inferred);
+        setRawInput(chordLine);
+        recompute(chordLine, level);
+      }
+    } catch (err) {
+      setAnalyzeError("\uBD84\uC11D \uC911 \uBB38\uC81C\uAC00 \uC0DD\uACBC\uC5B4\uC694. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.");
+    } finally {
+      setAnalyzing(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+  if (!apiKeySaved) {
+    return /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        className: "w-full min-h-full flex items-center justify-center p-6",
+        style: { background: "radial-gradient(circle at 20% -10%, #2A2F5B 0%, #14172E 55%, #0E1024 100%)", fontFamily: "'Noto Sans KR', sans-serif" }
+      },
+      /* @__PURE__ */ React.createElement("div", { className: "max-w-md w-full rounded-2xl p-7 flex flex-col gap-4", style: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" } }, /* @__PURE__ */ React.createElement("span", { className: "text-xs tracking-widest font-mono", style: { color: "#FFB238" } }, "PRACTICAL BAND \xB7 \uC2E4\uC6A9\uBC34\uB4DC \uC218\uC5C5 \uB3C4\uAD6C"), /* @__PURE__ */ React.createElement("h1", { className: "text-2xl font-extrabold", style: { color: "#F5F3ED" } }, "\uCF54\uB4DC \uB2E8\uC21C\uD654 \uB3C4\uC6B0\uBBF8"), /* @__PURE__ */ React.createElement("p", { className: "text-sm", style: { color: "#C8CCE8" } }, "\uC545\uBCF4 \uC0AC\uC9C4\uC5D0\uC11C \uCF54\uB4DC\uB97C \uC790\uB3D9\uC73C\uB85C \uC77D\uC5B4\uC624\uB294 \uAE30\uB2A5\uC744 \uC4F0\uB824\uBA74 Google Gemini API \uD0A4\uAC00 \uD544\uC694\uD574\uC694. \uD0A4\uB294 ", /* @__PURE__ */ React.createElement("span", { style: { color: "#F5F3ED" } }, "aistudio.google.com"), "\uC5D0\uC11C \uBB34\uB8CC\uB85C \uBC1C\uAE09\uBC1B\uC744 \uC218 \uC788\uACE0, \uC774 \uD0A4\uB294 \uC800\uC7A5\uB418\uC9C0 \uC54A\uACE0 \uC9C0\uAE08 \uCF1C\uB454 \uBE0C\uB77C\uC6B0\uC800 \uD0ED\uC5D0\uB9CC \uC784\uC2DC\uB85C \uC0AC\uC6A9\uB3FC\uC694."), /* @__PURE__ */ React.createElement(
+        "input",
+        {
+          type: "password",
+          value: apiKeyInput,
+          onChange: (e) => setApiKeyInput(e.target.value),
+          placeholder: "AIza...",
+          className: "w-full rounded-lg px-4 py-3 font-mono text-sm outline-none",
+          style: { background: "#0E1024", color: "#F5F3ED", border: "1px solid rgba(255,255,255,0.12)" }
+        }
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => {
+            if (!apiKeyInput.trim()) return;
+            setApiKey(apiKeyInput.trim());
+            setApiKeySaved(true);
+          },
+          className: "w-full py-3 rounded-lg text-sm font-semibold",
+          style: { background: "#FFB238", color: "#14172E" }
+        },
+        "\uC800\uC7A5\uD558\uACE0 \uC2DC\uC791\uD558\uAE30"
+      ), /* @__PURE__ */ React.createElement(
+        "button",
+        {
+          onClick: () => setApiKeySaved(true),
+          className: "text-xs underline self-center",
+          style: { color: "#8A8FB5" }
+        },
+        "\uD0A4 \uC5C6\uC774 \uCF54\uB4DC \uB2E8\uC21C\uD654 \uAE30\uB2A5\uB9CC \uBA3C\uC800 \uC368\uBCFC\uAC8C\uC694"
+      ))
+    );
+  }
+  return /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      className: "w-full min-h-full p-6 md:p-10",
+      style: { background: "radial-gradient(circle at 20% -10%, #2A2F5B 0%, #14172E 55%, #0E1024 100%)", fontFamily: "'Noto Sans KR', sans-serif" }
+    },
+    /* @__PURE__ */ React.createElement("div", { className: "max-w-4xl mx-auto flex flex-col gap-8" }, /* @__PURE__ */ React.createElement("header", { className: "flex flex-col gap-1 relative" }, /* @__PURE__ */ React.createElement("span", { className: "text-xs tracking-widest font-mono", style: { color: "#FFB238" } }, "PRACTICAL BAND \xB7 \uC2E4\uC6A9\uBC34\uB4DC \uC218\uC5C5 \uB3C4\uAD6C"), /* @__PURE__ */ React.createElement("h1", { className: "text-3xl md:text-4xl font-extrabold", style: { color: "#F5F3ED" } }, "\uCF54\uB4DC \uB2E8\uC21C\uD654 \uB3C4\uC6B0\uBBF8"), /* @__PURE__ */ React.createElement("p", { className: "text-sm", style: { color: "#8A8FB5" } }, "\uCF54\uB4DC\uB97C \uC785\uB825\uD558\uAC70\uB098 \uC545\uBCF4 \uC0AC\uC9C4\uC744 \uC62C\uB9AC\uBA74, \uC545\uAE30\uBCC4\uB85C \uC26C\uC6B4 \uC5F0\uC8FC \uAC00\uC774\uB4DC\uB97C \uBCF4\uC5EC\uC918\uC694."), /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          setApiKeySaved(false);
+          setApiKeyInput(apiKey);
+        },
+        className: "text-xs underline self-start mt-1",
+        style: { color: "#8A8FB5" }
+      },
+      apiKey ? "API \uD0A4 \uBCC0\uACBD" : "API \uD0A4 \uC785\uB825\uD558\uAE30 (\uC0AC\uC9C4 \uC778\uC2DD \uAE30\uB2A5 \uC0AC\uC6A9 \uC2DC \uD544\uC694)"
+    )), /* @__PURE__ */ React.createElement("section", { className: "rounded-2xl p-5 flex flex-col gap-4", style: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" } }, /* @__PURE__ */ React.createElement("div", { className: "flex flex-col gap-2" }, /* @__PURE__ */ React.createElement("label", { className: "text-sm font-semibold", style: { color: "#F5F3ED" } }, "\uCF54\uB4DC \uC9C4\uD589 \uC785\uB825"), /* @__PURE__ */ React.createElement(
+      "input",
+      {
+        value: rawInput,
+        onChange: handleInputChange,
+        placeholder: "\uC608: Cmaj7 - Am7 - Dm7 - G7",
+        className: "w-full rounded-lg px-4 py-3 font-mono text-base outline-none",
+        style: { background: "#0E1024", color: "#F5F3ED", border: "1px solid rgba(255,255,255,0.12)" }
+      }
+    )), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap items-center gap-3" }, /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { color: "#8A8FB5" } }, "\uB2E8\uC21C\uD654 \uC815\uB3C4"), /* @__PURE__ */ React.createElement("div", { className: "flex rounded-full overflow-hidden", style: { border: "1px solid rgba(255,255,255,0.15)" } }, [{ id: "A", label: "\uC544\uC8FC \uC27D\uAC8C (\uAE30\uBCF8 \uD654\uC74C\uB9CC)" }, { id: "B", label: "\uC27D\uAC8C (\uC138\uBE10\uC2A4 \uCF54\uB4DC\uAE4C\uC9C0)" }].map((opt) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: opt.id,
+        onClick: () => {
+          setLevel(opt.id);
+        },
+        className: "px-3 py-1.5 text-xs font-semibold transition-colors",
+        style: {
+          background: level === opt.id ? "#FFB238" : "transparent",
+          color: level === opt.id ? "#14172E" : "#8A8FB5"
+        }
+      },
+      opt.label
+    )))), wasInferred && /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        className: "text-xs px-3 py-2 rounded-lg",
+        style: { background: "rgba(255,178,56,0.12)", color: "#FFB238", border: "1px solid rgba(255,178,56,0.35)" }
+      },
+      "\u26A0 \uC774 \uCF54\uB4DC\uB294 \uCF54\uB4DC \uAE30\uD638\uAC00 \uC5C6\uB294 \uC624\uC120\uBCF4\uB97C \uBCF4\uACE0 AI\uAC00 \uC74C\uD45C\uB97C \uBD84\uC11D\uD574 \uCD94\uC815\uD55C \uACB0\uACFC\uC608\uC694. \uC2E4\uC81C \uCF54\uB4DC\uC640 \uB2E4\uB97C \uC218 \uC788\uC73C\uB2C8 \uC9C0\uB3C4 \uAD50\uC0AC\uAC00 \uD55C \uBC88 \uD655\uC778\uD574 \uC8FC\uC138\uC694."
+    ), /* @__PURE__ */ React.createElement("div", { className: "flex flex-wrap gap-2 pt-1" }, chords.length === 0 && /* @__PURE__ */ React.createElement("span", { className: "text-sm", style: { color: "#8A8FB5" } }, "\uCF54\uB4DC\uB97C \uC785\uB825\uD574 \uBCF4\uC138\uC694."), chords.map((c, i) => /* @__PURE__ */ React.createElement(ChordTag, { key: i, chord: c }))), /* @__PURE__ */ React.createElement("div", { className: "pt-2 mt-2 flex flex-col gap-2", style: { borderTop: "1px dashed rgba(255,255,255,0.12)" } }, /* @__PURE__ */ React.createElement("label", { className: "text-sm font-semibold", style: { color: "#F5F3ED" } }, "\uB610\uB294 \uC545\uBCF4 \uC0AC\uC9C4 \uC62C\uB9AC\uAE30"), /* @__PURE__ */ React.createElement("div", { className: "flex items-center gap-3 flex-wrap" }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => {
+          var _a;
+          return (_a = fileInputRef.current) == null ? void 0 : _a.click();
+        },
+        disabled: analyzing,
+        className: "px-4 py-2 rounded-lg text-sm font-semibold",
+        style: { background: "#2EC4B6", color: "#0E1024", opacity: analyzing ? 0.6 : 1 }
+      },
+      analyzing ? "\uCF54\uB4DC \uBD84\uC11D \uC911..." : "\uC0AC\uC9C4 \uC120\uD0DD"
+    ), /* @__PURE__ */ React.createElement("input", { ref: fileInputRef, type: "file", accept: "image/*", onChange: handleImageUpload, className: "hidden" }), /* @__PURE__ */ React.createElement("span", { className: "text-xs", style: { color: "#8A8FB5" } }, "\uCF54\uB4DC\uBCF4\uB4E0 \uCF69\uB098\uBB3C \uC624\uC120\uBCF4\uB4E0 \uC62C\uB824\uBCF4\uC138\uC694 \xB7 \uCF54\uB4DC \uAE30\uD638\uAC00 \uC788\uC73C\uBA74 \uADF8\uB300\uB85C \uC77D\uACE0, \uC5C6\uC73C\uBA74 \uC74C\uD45C\uB97C \uBD84\uC11D\uD574 \uCD94\uC815\uD574\uC694 ", !apiKey && "\xB7 API \uD0A4 \uC785\uB825\uC774 \uD544\uC694\uD574\uC694")), analyzeError && /* @__PURE__ */ React.createElement("p", { className: "text-xs", style: { color: "#FF7A6E" } }, analyzeError))), /* @__PURE__ */ React.createElement("section", { className: "flex flex-col gap-4" }, /* @__PURE__ */ React.createElement("div", { className: "flex gap-2 flex-wrap" }, INSTRUMENTS.map((inst) => /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: inst.id,
+        onClick: () => setInstrument(inst.id),
+        className: "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-transform",
+        style: {
+          background: instrument === inst.id ? "#FFB238" : "rgba(255,255,255,0.05)",
+          color: instrument === inst.id ? "#14172E" : "#F5F3ED",
+          border: "1px solid rgba(255,255,255,0.1)",
+          transform: instrument === inst.id ? "translateY(-2px)" : "none"
+        }
+      },
+      /* @__PURE__ */ React.createElement("span", null, inst.emoji),
+      inst.label
+    ))), /* @__PURE__ */ React.createElement("div", { className: "rounded-2xl p-6", style: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", minHeight: "180px" } }, /* @__PURE__ */ React.createElement(InstrumentView, { instrument, chords }))), /* @__PURE__ */ React.createElement("section", { className: "rounded-2xl overflow-hidden", style: { border: "1px solid rgba(255,255,255,0.08)" } }, /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => setShowInfo((v) => !v),
+        className: "w-full text-left px-5 py-3 text-sm font-semibold flex justify-between items-center",
+        style: { background: "rgba(255,255,255,0.04)", color: "#F5F3ED" }
+      },
+      "\uC774 \uB3C4\uAD6C\uAC00 \uD560 \uC218 \uC788\uB294 \uAC83 / \uC544\uC9C1 \uC5B4\uB824\uC6B4 \uAC83",
+      /* @__PURE__ */ React.createElement("span", { style: { color: "#8A8FB5" } }, showInfo ? "\uC811\uAE30 \u25B2" : "\uD3BC\uCE58\uAE30 \u25BC")
+    ), showInfo && /* @__PURE__ */ React.createElement("div", { className: "px-5 py-4 flex flex-col gap-3 text-sm", style: { color: "#C8CCE8", background: "#14172E" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "font-semibold", style: { color: "#2EC4B6" } }, "\u2713 \uC9C0\uAE08 \uAC00\uB2A5\uD55C \uAC83"), /* @__PURE__ */ React.createElement("ul", { className: "list-disc pl-5 pt-1 space-y-1" }, /* @__PURE__ */ React.createElement("li", null, "\uD14D\uC2A4\uD2B8\uB85C \uC785\uB825\uD55C \uCF54\uB4DC \uC9C4\uD589\uC744 \uADDC\uCE59 \uAE30\uBC18\uC73C\uB85C \uB2E8\uC21C\uD654 (\uC608: Cmaj7 \u2192 C, Dm7b5 \u2192 Dm)"), /* @__PURE__ */ React.createElement("li", null, "\uC545\uAE30\uBCC4(\uAE30\uD0C0/\uBCA0\uC774\uC2A4/\uAC74\uBC18/\uBCF4\uCEEC/\uB4DC\uB7FC) \uB9DE\uCDA4 \uAC00\uC774\uB4DC \uC790\uB3D9 \uC0DD\uC131"), /* @__PURE__ */ React.createElement("li", null, "\uAE30\uD0C0 \uC624\uD508 \uCF54\uB4DC\uAC00 \uC5B4\uB824\uC6B4 \uC870\uC131\uC77C \uACBD\uC6B0 \uCE74\uD3EC \uC704\uCE58 \uC790\uB3D9 \uC81C\uC548"), /* @__PURE__ */ React.createElement("li", null, "\uCF54\uB4DC \uAE30\uD638\uAC00 \uC774\uBBF8 \uC801\uD78C '\uCF54\uB4DC\uBCF4/\uB9AC\uB4DC\uC2DC\uD2B8' \uC0AC\uC9C4\uC5D0\uC11C \uCF54\uB4DC \uADF8\uB300\uB85C \uCD94\uCD9C"), /* @__PURE__ */ React.createElement("li", null, "\uCF54\uB4DC \uAE30\uD638 \uC5C6\uC774 \uC74C\uD45C(\uC624\uC120\uBCF4)\uB9CC \uC788\uB294 \uC545\uBCF4\uB3C4 \uC5C5\uB85C\uB4DC\uD558\uBA74, AI\uAC00 \uB9C8\uB514\uBCC4 \uC74C\uD45C\uB97C \uBCF4\uACE0 \uC5B4\uC6B8\uB9AC\uB294 \uCF54\uB4DC\uB97C \uCD94\uC815 (\u26A0 \uCD94\uC815\uCE58, \uD655\uC778 \uD544\uC694)"))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("p", { className: "font-semibold", style: { color: "#FFB238" } }, "\u25B3 \uC544\uC9C1 \uC5B4\uB824\uC6B4 \uAC83"), /* @__PURE__ */ React.createElement("ul", { className: "list-disc pl-5 pt-1 space-y-1" }, /* @__PURE__ */ React.createElement("li", null, "\uC624\uC120\uBCF4\uC5D0\uC11C \uCD94\uC815\uD55C \uCF54\uB4DC\uB294 \uC815\uD655\uB3C4\uAC00 100%\uAC00 \uC544\uB2C8\uC5D0\uC694 \u2014 \uD654\uBA74\uC5D0 '\uCD94\uC815\uB428' \uD45C\uC2DC\uAC00 \uB728\uBA74 \uC9C0\uB3C4 \uAD50\uC0AC\uAC00 \uAF2D \uD55C \uBC88 \uD655\uC778\uD574 \uC8FC\uC138\uC694"), /* @__PURE__ */ React.createElement("li", null, "\uC190\uAE00\uC528 \uC545\uBCF4\uB098 \uC0AC\uC9C4 \uD654\uC9C8\uC774 \uB0AE\uC73C\uBA74 \uC778\uC2DD \uC624\uB958\uAC00 \uB298\uC5B4\uB098\uC694"), /* @__PURE__ */ React.createElement("li", null, "\uC2E4\uC2DC\uAC04\uC73C\uB85C \uC5F0\uC8FC \uC18C\uB9AC\uB97C \uB4E3\uACE0 \uCF54\uB4DC\uB97C \uC54C\uC544\uB0B4\uB294 \uAE30\uB2A5 (\uC624\uB514\uC624 \uBD84\uC11D)\uC740 \uBBF8\uC9C0\uC6D0"), /* @__PURE__ */ React.createElement("li", null, "\uBCF5\uC7A1\uD55C \uC7AC\uC988 \uBCF4\uC774\uC2F1, \uD150\uC158 \uCF54\uB4DC\uC758 \uC138\uBC00\uD55C \uB258\uC559\uC2A4\uB294 \uB2E8\uC21C\uD654 \uACFC\uC815\uC5D0\uC11C \uC0DD\uB7B5\uB428"))))))
+  );
+}
+
+try {
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(React.createElement(BandChordHelper));
+} catch (err) {
+  showBootError(err && err.message ? err.message : String(err));
+}
+</script>
+</body>
+</html>
